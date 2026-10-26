@@ -1,0 +1,7 @@
+node_modules/
+web/dist/
+data/
+models/
+.DS_Store
+bin/
+.claude/

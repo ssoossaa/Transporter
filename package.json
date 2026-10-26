@@ -1,0 +1,22 @@
+{
+  "name": "transporter",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Colle un lien TikTok : récupère la vidéo (ou les slides d'un carrousel) et sa transcription, en local.",
+  "type": "module",
+  "scripts": {
+    "setup": "sh scripts/setup.sh",
+    "postinstall": "npm install --prefix web",
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"node --watch server/index.js\" \"npm run dev --prefix web\"",
+    "build": "npm run build --prefix web",
+    "start": "npm run build && node server/index.js",
+    "install-app": "sh scripts/install-app.sh",
+    "uninstall-app": "sh scripts/uninstall-app.sh"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
