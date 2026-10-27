@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { HEADERS, getPostInfo } from './tiktok.js';
+import { HEADERS, getPostInfo, parseAccountUrl, resolveUrl } from './tiktok.js';
 
 export const DATA_DIR = path.resolve(process.env.DATA_DIR || 'data');
 const MODEL = path.resolve(process.env.WHISPER_MODEL || 'models/ggml-large-v3-turbo.bin');
@@ -35,6 +35,10 @@ const STEPS = {
     { key: 'fetch', label: 'Analyse du lien' },
     { key: 'download', label: 'Téléchargement des slides' },
     { key: 'zip', label: "Création de l'archive" },
+  ],
+  account: [
+    { key: 'fetch', label: 'Analyse du lien' },
+    { key: 'list', label: 'Récupération des posts' },
   ],
 };
 
@@ -84,6 +88,10 @@ function step(job, key) {
     progress(p) {
       s.progress = Math.max(0, Math.min(100, Math.round(p)));
     },
+    // Free-text progress, for steps whose total isn't known in advance.
+    detail(text) {
+      s.detail = text;
+    },
     done() {
       s.status = 'done';
       s.progress = 100;
@@ -95,7 +103,20 @@ async function run(job) {
   const dir = path.join(DATA_DIR, job.id);
   await fs.mkdir(dir, { recursive: true });
 
-  const info = await getPostInfo(job.url);
+  const url = await resolveUrl(job.url);
+  const account = parseAccountUrl(url);
+  if (account) {
+    job.type = 'account';
+    job.info = { author: account.author, url: account.url, posts: null };
+    job.steps = STEPS.account.map((s) => ({ ...s, status: 'pending', progress: null }));
+    step(job, 'fetch').done();
+    job.result = await runAccount(job, account, dir);
+    job.status = 'done';
+    await saveMeta(job);
+    return;
+  }
+
+  const info = await getPostInfo(url);
   job.type = info.type;
   job.info = { id: info.id, url: info.url, author: info.author, description: info.description, cover: info.cover, duration: info.duration, slides: info.images.length };
   job.steps = STEPS[info.type].map((s) => ({ ...s, status: 'pending', progress: null }));
@@ -216,6 +237,66 @@ async function runCarousel(job, info, dir) {
   };
 }
 
+async function runAccount(job, account, dir) {
+  const list = step(job, 'list');
+  list.start();
+  const posts = [];
+  // --flat-playlist lists posts without downloading them; -j prints one JSON line per
+  // post as pages arrive, so the count updates live. Carousels are listed too
+  // (under a /video/ URL, which TikTok and Transporter both accept).
+  const listing = exec(BIN.ytdlp, ['--flat-playlist', '-j', '--socket-timeout', '20', account.url], (line) => {
+    if (!line.startsWith('{')) return;
+    let e;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!e.url) return;
+    posts.push({
+      url: e.url,
+      id: String(e.id),
+      description: e.description || e.title || '',
+      date: e.timestamp ? new Date(e.timestamp * 1000).toISOString() : null,
+      views: e.view_count ?? null,
+      likes: e.like_count ?? null,
+      duration: e.duration ?? null,
+    });
+    list.detail(`${posts.length} posts trouvés`);
+  });
+  let partial = false;
+  try {
+    await listing;
+  } catch (err) {
+    partial = true;
+    // TikTok sometimes cuts long listings short: keep what we got rather than failing.
+    if (!posts.length) throw new Error('Compte introuvable, privé ou sans post public.', { cause: err });
+    console.warn(`[job ${job.id}] liste incomplète :`, err.message);
+  }
+  if (!posts.length) throw new Error('Aucun post trouvé : le compte est peut-être privé ou vide.');
+  job.info.posts = posts.length;
+  list.done();
+
+  const base = `${account.author}-posts`;
+  await fs.writeFile(path.join(dir, 'posts.txt'), posts.map((p) => p.url).join('\n') + '\n');
+  const cell = (v) => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+  const csv = [
+    ['url', 'date', 'description', 'vues', 'likes', 'duree_s'],
+    ...posts.map((p) => [p.url, p.date, p.description, p.views, p.likes, p.duration]),
+  ].map((row) => row.map(cell).join(',')).join('\n');
+  // BOM so Excel reads the accents correctly.
+  await fs.writeFile(path.join(dir, 'posts.csv'), `﻿${csv}\n`);
+
+  return {
+    posts,
+    partial,
+    files: {
+      txt: { path: 'posts.txt', name: `${base}.txt` },
+      csv: { path: 'posts.csv', name: `${base}.csv` },
+    },
+  };
+}
+
 function toSrt(segments) {
   const ts = (sec) => {
     const ms = Math.round(sec * 1000);
@@ -239,13 +320,21 @@ function exec(cmd, args, onLine) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let tail = '';
-    const handle = (chunk) => {
-      const text = chunk.toString();
-      tail = (tail + text).slice(-4000);
-      if (onLine) text.split(/\r|\n/).forEach((l) => l && onLine(l));
+    // Chunks can end mid-line (e.g. a long JSON line), so keep the remainder per stream.
+    const readLines = (stream) => {
+      let pending = '';
+      stream.on('data', (chunk) => {
+        const text = chunk.toString();
+        tail = (tail + text).slice(-4000);
+        if (!onLine) return;
+        const lines = (pending + text).split(/\r|\n/);
+        pending = lines.pop();
+        lines.forEach((l) => l && onLine(l));
+      });
+      stream.on('end', () => pending && onLine?.(pending));
     };
-    child.stdout.on('data', handle);
-    child.stderr.on('data', handle);
+    readLines(child.stdout);
+    readLines(child.stderr);
     child.on('error', (err) =>
       reject(err.code === 'ENOENT' ? new Error(`${cmd} est introuvable. Lance « npm run setup ».`) : err),
     );

@@ -40,18 +40,27 @@ export default function App() {
     }
   }, [])
 
-  // Restore the last job on reload so results aren't lost.
+  // Restore the job in the URL on reload, and on Back (e.g. from a post to its account list).
   useEffect(() => {
-    const id = readJobFromHash()
-    if (!id) return
-    fetch(`/api/jobs/${id}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j) => {
-        if (!j) return
-        setJob(j)
-        setUrl(j.url)
-      })
-      .catch(() => {})
+    const load = () => {
+      const id = readJobFromHash()
+      if (!id) {
+        setJob(null)
+        setUrl('')
+        return
+      }
+      fetch(`/api/jobs/${id}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => {
+          if (!j) return
+          setJob(j)
+          setUrl(j.url)
+        })
+        .catch(() => {})
+    }
+    load()
+    window.addEventListener('popstate', load)
+    return () => window.removeEventListener('popstate', load)
   }, [])
 
   useEffect(() => {
@@ -67,26 +76,33 @@ export default function App() {
     return () => clearInterval(timer)
   }, [jobId, running])
 
-  async function submit(e) {
-    e.preventDefault()
-    if (!url.trim() || submitting || running) return
+  // `fromList`: opened from an account's post list, so Back returns to that list.
+  async function start(target, { fromList = false } = {}) {
+    if (!target.trim() || submitting || running) return
     setError(null)
     setSubmitting(true)
     try {
       const res = await fetch('/api/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim() }),
+        body: JSON.stringify({ url: target.trim() }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Erreur inattendue.')
       setJob(data)
-      history.replaceState(null, '', `#job=${data.id}`)
+      setUrl(target)
+      history[fromList ? 'pushState' : 'replaceState'](null, '', `#job=${data.id}`)
+      if (fromList) window.scrollTo({ top: 0, behavior: 'smooth' })
     } catch (err) {
       setError(err.message)
     } finally {
       setSubmitting(false)
     }
+  }
+
+  function submit(e) {
+    e.preventDefault()
+    start(url)
   }
 
   async function paste() {
@@ -109,22 +125,22 @@ export default function App() {
     <main className="page">
       <section className={`hero ${job ? 'hero--compact' : ''}`}>
         <div className="glow" aria-hidden />
-        <p className="eyebrow">TikTok → MP4 · Slides · Transcription</p>
+        <p className="eyebrow">TikTok → MP4 · Slides · Transcription · Comptes</p>
         <h1>
           Colle un lien.
           <br />
           <span className="gradient">Récupère tout.</span>
         </h1>
         <p className="lede">
-          La vidéo en MP4 et sa transcription, ou toutes les slides d'un carrousel en .zip. Tout tourne en local sur ta
-          machine.
+          La vidéo en MP4 et sa transcription, toutes les slides d'un carrousel en .zip, ou la liste des posts d'un
+          compte. Tout tourne en local sur ta machine.
         </p>
 
         <form className="search" onSubmit={submit}>
           <input
             type="url"
             inputMode="url"
-            placeholder="https://www.tiktok.com/@compte/video/…"
+            placeholder="Lien d'une vidéo, d'un carrousel ou d'un compte TikTok"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             disabled={running}
@@ -137,7 +153,7 @@ export default function App() {
             </button>
           )}
           <button type="submit" className="primary" disabled={!url.trim() || submitting || running}>
-            {running ? 'En cours…' : 'Transcrire'}
+            {running ? 'En cours…' : 'Lancer'}
           </button>
         </form>
         {error && <p className="error">{error}</p>}
@@ -150,10 +166,19 @@ export default function App() {
           {job.status === 'error' && <p className="error">{job.error}</p>}
           {job.status === 'done' && job.type === 'video' && <VideoResult job={job} />}
           {job.status === 'done' && job.type === 'carousel' && <CarouselResult job={job} />}
+          {job.status === 'done' && job.type === 'account' && (
+            <AccountResult job={job} onOpen={(postUrl) => start(postUrl, { fromList: true })} />
+          )}
         </section>
       )}
     </main>
   )
+}
+
+function badgeLabel(job) {
+  if (job.type === 'carousel') return `Carrousel · ${job.info.slides} slides`
+  if (job.type === 'account') return job.info.posts ? `Compte · ${job.info.posts} posts` : 'Compte'
+  return 'Vidéo'
 }
 
 function JobHeader({ job, onReset }) {
@@ -163,7 +188,7 @@ function JobHeader({ job, onReset }) {
       <div className="job-meta">
         {info ? (
           <>
-            <span className="badge">{job.type === 'carousel' ? `Carrousel · ${info.slides} slides` : 'Vidéo'}</span>
+            <span className="badge">{badgeLabel(job)}</span>
             <a href={info.url} target="_blank" rel="noreferrer" className="author">
               @{info.author}
             </a>
@@ -190,6 +215,7 @@ function Steps({ job }) {
           <span className="dot" />
           <span className="step-label">{s.label}</span>
           {s.status === 'running' && s.progress != null && <span className="pct">{s.progress}%</span>}
+          {s.status === 'running' && s.progress == null && s.detail && <span className="pct">{s.detail}</span>}
           {s.status === 'running' && (
             <span className="bar">
               <span style={{ width: s.progress != null ? `${s.progress}%` : '35%' }} className={s.progress == null ? 'indeterminate' : ''} />
@@ -271,6 +297,57 @@ function VideoResult({ job }) {
           </a>
         </div>
       </div>
+    </div>
+  )
+}
+
+const dateFormat = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })
+const countFormat = new Intl.NumberFormat('fr-FR', { notation: 'compact' })
+
+function AccountResult({ job, onOpen }) {
+  const { result } = job
+  const [copied, setCopied] = useState(false)
+
+  async function copyAll() {
+    await navigator.clipboard.writeText(result.posts.map((p) => p.url).join('\n'))
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <div className="account">
+      <div className="actions">
+        <button className="primary" onClick={copyAll}>
+          {copied ? 'Copié ✓' : `Copier les ${result.posts.length} URLs`}
+        </button>
+        <a className="ghost" href={fileUrl(job, result.files.txt, true)}>
+          .txt
+        </a>
+        <a className="ghost" href={fileUrl(job, result.files.csv, true)}>
+          .csv
+        </a>
+      </div>
+      {result.partial && (
+        <p className="muted note">TikTok a interrompu la liste : certains posts plus anciens peuvent manquer.</p>
+      )}
+      <ol className="posts">
+        {result.posts.map((p) => (
+          <li key={p.id} className="post">
+            <div className="post-main">
+              <a href={p.url} target="_blank" rel="noreferrer" className="post-desc">
+                {p.description || <span className="muted">Sans description</span>}
+              </a>
+              <span className="post-meta">
+                {p.date && dateFormat.format(new Date(p.date))}
+                {p.views != null && ` · ${countFormat.format(p.views)} vues`}
+              </span>
+            </div>
+            <button className="ghost small" onClick={() => onOpen(p.url)}>
+              Récupérer
+            </button>
+          </li>
+        ))}
+      </ol>
     </div>
   )
 }

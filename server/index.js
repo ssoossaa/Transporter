@@ -26,7 +26,7 @@ app.get('/api/ping', (_req, res) => res.sendStatus(204));
 
 app.post('/api/jobs', (req, res) => {
   const url = String(req.body?.url || '').trim();
-  if (!isTikTokUrl(url)) return res.status(400).json({ error: 'Colle un lien TikTok valide (tiktok.com ou vm.tiktok.com).' });
+  if (!isTikTokUrl(url)) return res.status(400).json({ error: 'Colle un lien TikTok valide : une publication ou un compte (tiktok.com/@…).' });
   res.status(201).json(createJob(url));
 });
 
