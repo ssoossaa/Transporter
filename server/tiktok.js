@@ -8,6 +8,9 @@ const UA =
 
 export const HEADERS = { 'User-Agent': UA, Referer: 'https://www.tiktok.com/' };
 
+// TikTok sometimes leaves a request hanging: give up rather than stall a whole batch.
+export const timeout = () => AbortSignal.timeout(20_000);
+
 const TIKTOK_HOST = /(^|\.)tiktok\.com$/i;
 
 export function isTikTokUrl(raw) {
@@ -21,7 +24,7 @@ export function isTikTokUrl(raw) {
 
 // Short links (vm.tiktok.com, tiktok.com/t/...) redirect to the canonical URL.
 export async function resolveUrl(raw) {
-  const res = await fetch(raw, { headers: HEADERS, redirect: 'follow' });
+  const res = await fetch(raw, { headers: HEADERS, redirect: 'follow', signal: timeout() });
   await res.body?.cancel();
   return res.url || raw;
 }
@@ -50,7 +53,7 @@ export async function getPostInfo(url) {
   const pageUrl = `https://www.tiktok.com/@${parsed.author}/video/${parsed.id}`;
   let item = null;
   try {
-    const html = await (await fetch(pageUrl, { headers: HEADERS })).text();
+    const html = await (await fetch(pageUrl, { headers: HEADERS, signal: timeout() })).text();
     const m = html.match(/<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/);
     const scope = m && JSON.parse(m[1]).__DEFAULT_SCOPE__;
     item = scope?.['webapp.video-detail']?.itemInfo?.itemStruct ?? null;
@@ -62,8 +65,11 @@ export async function getPostInfo(url) {
   const type = images.length ? 'carousel' : 'video';
 
   return {
+    // The /photo/ URL is the one TikTok itself shows for carousels.
+    url: type === 'carousel' ? `https://www.tiktok.com/@${parsed.author}/photo/${parsed.id}` : pageUrl,
+    // False when TikTok didn't serve the post data (blocked, deleted…): the type is then a guess.
+    found: Boolean(item),
     id: parsed.id,
-    url: pageUrl,
     type,
     author: item?.author?.uniqueId || parsed.author,
     description: item?.desc || '',

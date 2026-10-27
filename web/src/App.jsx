@@ -100,6 +100,26 @@ export default function App() {
     }
   }
 
+  // Batch job built from an account's list; Back returns to that list.
+  async function extractCarouselText(accountJob) {
+    setError(null)
+    try {
+      const res = await fetch(`/api/jobs/${accountJob.id}/carousel-text`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Erreur inattendue.')
+      setJob(data)
+      history.pushState(null, '', `#job=${data.id}`)
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function cancel() {
+    const res = await fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' })
+    if (res.ok) setJob(await res.json())
+  }
+
   function submit(e) {
     e.preventDefault()
     start(url)
@@ -161,13 +181,20 @@ export default function App() {
 
       {job && (
         <section className="panel">
-          <JobHeader job={job} onReset={reset} />
+          <JobHeader job={job} onReset={reset} onCancel={cancel} />
           {job.status !== 'done' && <Steps job={job} />}
           {job.status === 'error' && <p className="error">{job.error}</p>}
           {job.status === 'done' && job.type === 'video' && <VideoResult job={job} />}
           {job.status === 'done' && job.type === 'carousel' && <CarouselResult job={job} />}
           {job.status === 'done' && job.type === 'account' && (
-            <AccountResult job={job} onOpen={(postUrl) => start(postUrl, { fromList: true })} />
+            <AccountResult
+              job={job}
+              onOpen={(postUrl) => start(postUrl, { fromList: true })}
+              onExtractText={() => extractCarouselText(job)}
+            />
+          )}
+          {job.status === 'done' && job.type === 'carousel-text' && (
+            <CarouselTextResult job={job} onOpen={(postUrl) => start(postUrl, { fromList: true })} />
           )}
         </section>
       )}
@@ -178,10 +205,12 @@ export default function App() {
 function badgeLabel(job) {
   if (job.type === 'carousel') return `Carrousel · ${job.info.slides} slides`
   if (job.type === 'account') return job.info.posts ? `Compte · ${job.info.posts} posts` : 'Compte'
+  if (job.type === 'carousel-text')
+    return job.info.carousels != null ? `Texte des carrousels · ${job.info.carousels}` : 'Texte des carrousels'
   return 'Vidéo'
 }
 
-function JobHeader({ job, onReset }) {
+function JobHeader({ job, onReset, onCancel }) {
   const info = job.info
   return (
     <header className="job-header">
@@ -203,6 +232,11 @@ function JobHeader({ job, onReset }) {
           Nouveau lien
         </button>
       )}
+      {job.status === 'running' && job.type === 'carousel-text' && (
+        <button className="ghost" onClick={onCancel} disabled={job.cancelRequested}>
+          {job.cancelRequested ? 'Arrêt…' : 'Arrêter'}
+        </button>
+      )}
     </header>
   )
 }
@@ -214,8 +248,9 @@ function Steps({ job }) {
         <li key={s.key} className={`step step--${s.status}`}>
           <span className="dot" />
           <span className="step-label">{s.label}</span>
-          {s.status === 'running' && s.progress != null && <span className="pct">{s.progress}%</span>}
-          {s.status === 'running' && s.progress == null && s.detail && <span className="pct">{s.detail}</span>}
+          {s.status === 'running' && (s.detail || s.progress != null) && (
+            <span className="pct">{s.detail || `${s.progress}%`}</span>
+          )}
           {s.status === 'running' && (
             <span className="bar">
               <span style={{ width: s.progress != null ? `${s.progress}%` : '35%' }} className={s.progress == null ? 'indeterminate' : ''} />
@@ -304,9 +339,11 @@ function VideoResult({ job }) {
 const dateFormat = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })
 const countFormat = new Intl.NumberFormat('fr-FR', { notation: 'compact' })
 
-function AccountResult({ job, onOpen }) {
+function AccountResult({ job, onOpen, onExtractText }) {
   const { result } = job
   const [copied, setCopied] = useState(false)
+  // Lists made before posts had a type: assume any of them may be a carousel.
+  const carousels = result.posts.filter((p) => p.type !== 'video').length
 
   async function copyAll() {
     await navigator.clipboard.writeText(result.posts.map((p) => p.url).join('\n'))
@@ -327,6 +364,20 @@ function AccountResult({ job, onOpen }) {
           .csv
         </a>
       </div>
+      {carousels > 0 && (
+        <div className="callout">
+          <div>
+            <strong>Texte des carrousels</strong>
+            <p className="muted">
+              Lit le texte de chaque slide des {carousels} carrousels du compte (environ 1 s par carrousel), à exporter
+              en tableur, JSON ou Markdown.
+            </p>
+          </div>
+          <button className="primary" onClick={onExtractText}>
+            Extraire le texte
+          </button>
+        </div>
+      )}
       {result.partial && (
         <p className="muted note">TikTok a interrompu la liste : certains posts plus anciens peuvent manquer.</p>
       )}
@@ -338,6 +389,7 @@ function AccountResult({ job, onOpen }) {
                 {p.description || <span className="muted">Sans description</span>}
               </a>
               <span className="post-meta">
+                {p.type && `${p.type === 'carousel' ? 'Carrousel' : 'Vidéo'} · `}
                 {p.date && dateFormat.format(new Date(p.date))}
                 {p.views != null && ` · ${countFormat.format(p.views)} vues`}
               </span>
@@ -416,6 +468,95 @@ function CarouselResult({ job }) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function CarouselTextResult({ job, onOpen }) {
+  const { result } = job
+  const [copied, setCopied] = useState(false)
+  const fullText = (c) => c.slides.map((s) => s.text).filter(Boolean).join('\n\n')
+
+  async function copyAll() {
+    await navigator.clipboard.writeText(result.carousels.map((c) => `${c.url}\n\n${fullText(c)}`).join('\n\n---\n\n'))
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  const summary = [
+    `${result.carousels.length} carrousel${result.carousels.length > 1 ? 's' : ''} lu${result.carousels.length > 1 ? 's' : ''}`,
+    result.videos > 0 && `${result.videos} vidéo${result.videos > 1 ? 's' : ''} ignorée${result.videos > 1 ? 's' : ''}`,
+    result.failed.length > 0 && `${result.failed.length} échec${result.failed.length > 1 ? 's' : ''}`,
+  ].filter(Boolean)
+
+  return (
+    <div className="account">
+      <div className="actions">
+        <button className="primary" onClick={copyAll} disabled={!result.carousels.length}>
+          {copied ? 'Copié ✓' : 'Copier tout le texte'}
+        </button>
+        <a className="ghost" href={fileUrl(job, result.files.csv, true)} title="Une ligne par carrousel, une colonne par slide">
+          .csv
+        </a>
+        <a className="ghost" href={fileUrl(job, result.files.json, true)} title="Pour un script ou un outil">
+          .json
+        </a>
+        <a className="ghost" href={fileUrl(job, result.files.md, true)} title="Lisible, à coller dans un assistant IA">
+          .md
+        </a>
+      </div>
+      <p className="muted note">
+        {summary.join(' · ')}
+        {result.cancelled && ` · arrêté à ${result.read}/${result.total} posts`}
+      </p>
+      {result.failed.length > 0 && (
+        <details className="note muted">
+          <summary>Posts non lus</summary>
+          <ul>
+            {result.failed.map((f) => (
+              <li key={f.url}>
+                <a href={f.url} target="_blank" rel="noreferrer">
+                  {f.url}
+                </a>{' '}
+                : {f.error}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <ol className="posts">
+        {result.carousels.map((c) => (
+          <li key={c.id} className="post post--text">
+            <div className="post-row">
+              <img className="post-thumb" src={fileUrl(job, c.slides[0])} alt="" loading="lazy" />
+              <div className="post-main">
+                <a href={c.url} target="_blank" rel="noreferrer" className="post-desc">
+                  {c.slides[0]?.text?.split('\n')[0] || c.description || <span className="muted">Sans texte</span>}
+                </a>
+                <span className="post-meta">
+                  {c.date && `${dateFormat.format(new Date(c.date))} · `}
+                  {c.slides.length} slides
+                  {c.views != null && ` · ${countFormat.format(c.views)} vues`}
+                </span>
+              </div>
+              <button className="ghost small" onClick={() => onOpen(c.url)}>
+                Récupérer
+              </button>
+            </div>
+            <details>
+              <summary>Voir le texte</summary>
+              <ul className="segments">
+                {c.slides.map((s) => (
+                  <li key={s.n}>
+                    <span className="slide-num">{s.n}</span>
+                    <span className="transcript-text">{s.text || <span className="muted">Pas de texte</span>}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </li>
+        ))}
+      </ol>
     </div>
   )
 }
