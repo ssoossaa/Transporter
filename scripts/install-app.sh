@@ -28,6 +28,9 @@ echo "→ Compilation du lanceur…"
 mkdir -p "$ROOT/bin"
 clang -O2 -o "$ROOT/bin/transporter-activate" "$ROOT/scripts/launcher/activate.c"
 
+echo "→ Compilation de l'OCR (texte des carrousels)…"
+npm run build:ocr --prefix "$ROOT" >/dev/null
+
 echo "→ Enregistrement auprès de macOS (launchd)…"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 mkdir -p "$(dirname "$PLIST")" "$(dirname "$LOG")"

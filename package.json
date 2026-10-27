@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "setup": "sh scripts/setup.sh",
-    "postinstall": "npm install --prefix web",
+    "postinstall": "npm install --prefix web && npm run build:ocr",
+    "build:ocr": "mkdir -p bin && swiftc -O -o bin/transporter-ocr scripts/ocr/ocr.swift",
     "dev": "concurrently -k -n api,web -c cyan,magenta \"node --watch server/index.js\" \"npm run dev --prefix web\"",
     "build": "npm run build --prefix web",
     "start": "npm run build && node server/index.js",
