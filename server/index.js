@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { DATA_DIR, cancelJob, createCarouselTextJob, createJob, getJob, hasRunningJobs, loadJobs } from './pipeline.js';
+import { DATA_DIR, cancelJob, createCarouselTextJob, createJob, getJob, hasRunningJobs, inspectUrl, loadJobs } from './pipeline.js';
 import { isTikTokUrl } from './tiktok.js';
 
 // Not PORT: dev tooling often sets PORT for the frontend, which would collide with Vite.
@@ -24,10 +24,24 @@ app.use((_req, _res, next) => {
 // The open page pings this so we know someone is still using the app.
 app.get('/api/ping', (_req, res) => res.sendStatus(204));
 
+const INVALID_URL = 'Colle un lien TikTok valide : une publication ou un compte (tiktok.com/@…).';
+
+// What can be done with this link (account, video or carousel), for the menu.
+app.get('/api/inspect', async (req, res) => {
+  const url = String(req.query.url || '').trim();
+  if (!isTikTokUrl(url)) return res.status(400).json({ error: INVALID_URL });
+  try {
+    res.json(await inspectUrl(url));
+  } catch (err) {
+    res.status(422).json({ error: err.message });
+  }
+});
+
 app.post('/api/jobs', (req, res) => {
   const url = String(req.body?.url || '').trim();
-  if (!isTikTokUrl(url)) return res.status(400).json({ error: 'Colle un lien TikTok valide : une publication ou un compte (tiktok.com/@…).' });
-  res.status(201).json(createJob(url));
+  if (!isTikTokUrl(url)) return res.status(400).json({ error: INVALID_URL });
+  const action = typeof req.body?.action === 'string' ? req.body.action : null;
+  res.status(201).json(createJob(url, action));
 });
 
 // Batch: reads the text of every carousel listed by an account job.
