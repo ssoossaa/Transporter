@@ -354,6 +354,17 @@ function AccountResult({ job, onOpen }) {
 
 function CarouselResult({ job }) {
   const { result } = job
+  const [copied, setCopied] = useState(false)
+  // Jobs from before the OCR step have no `text` on their slides.
+  const hasOcr = result.slides.some((s) => s.text !== undefined)
+  const texts = result.slides.map((s, i) => ({ n: i + 1, text: s.text })).filter((s) => s.text)
+
+  async function copy() {
+    await navigator.clipboard.writeText(texts.map((s) => s.text).join('\n\n'))
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
   return (
     <div className="carousel">
       <div className="actions">
@@ -374,6 +385,37 @@ function CarouselResult({ job }) {
           </a>
         ))}
       </div>
+
+      {hasOcr && (
+        <div className="transcript slide-text">
+          <div className="transcript-bar">
+            <span className="slide-text-title">Texte des slides</span>
+          </div>
+          <div className="transcript-body">
+            {!texts.length && <p className="muted">Aucun texte détecté sur les slides.</p>}
+            {texts.length > 0 && (
+              <ul className="segments">
+                {texts.map((s) => (
+                  <li key={s.n}>
+                    <span className="slide-num">{s.n}</span>
+                    <span className="transcript-text">{s.text}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="actions">
+            <button className="primary" onClick={copy} disabled={!texts.length}>
+              {copied ? 'Copié ✓' : 'Copier le texte'}
+            </button>
+            {result.files.text && (
+              <a className="ghost" href={fileUrl(job, result.files.text, true)}>
+                .txt
+              </a>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

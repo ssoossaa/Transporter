@@ -22,6 +22,8 @@ const BIN = {
   ytdlp: process.env.YTDLP_BIN || 'yt-dlp',
   ffmpeg: process.env.FFMPEG_BIN || 'ffmpeg',
   whisper: process.env.WHISPER_BIN || 'whisper-cli',
+  // Built from scripts/ocr/ocr.swift by « npm install » and « npm run install-app ».
+  ocr: process.env.OCR_BIN || path.resolve('bin/transporter-ocr'),
 };
 
 const STEPS = {
@@ -34,6 +36,7 @@ const STEPS = {
   carousel: [
     { key: 'fetch', label: 'Analyse du lien' },
     { key: 'download', label: 'Téléchargement des slides' },
+    { key: 'ocr', label: 'Lecture du texte des slides' },
     { key: 'zip', label: "Création de l'archive" },
   ],
   account: [
@@ -222,19 +225,79 @@ async function runCarousel(job, info, dir) {
   }
   dl.done();
 
+  const ocr = step(job, 'ocr');
+  ocr.start();
+  let text = null;
+  try {
+    const texts = await readSlidesText(slides.map((s) => path.join(dir, s.path)));
+    slides.forEach((s, i) => (s.text = texts[i]));
+    if (texts.some(Boolean)) {
+      const all = texts.map((t, i) => `Slide ${i + 1}\n${t || '(pas de texte)'}`).join('\n\n');
+      await fs.writeFile(path.join(dir, 'texte.txt'), `${all}\n`);
+      text = { path: 'texte.txt', name: `${base}-texte.txt` };
+    }
+  } catch (err) {
+    // The slides are what matter; the text is a bonus.
+    console.warn(`[job ${job.id}] OCR impossible :`, err.message);
+  }
+  ocr.done();
+
   const zip = step(job, 'zip');
   zip.start();
   const zipPath = path.join(dir, `${base}.zip`);
-  await exec('zip', ['-j', '-q', zipPath, ...slides.map((s) => path.join(dir, s.path))]);
+  const zipped = [...slides.map((s) => s.path), ...(text ? [text.path] : [])];
+  await exec('zip', ['-j', '-q', zipPath, ...zipped.map((p) => path.join(dir, p))]);
   zip.done();
 
   return {
     slides,
     files: {
       zip: { path: `${base}.zip`, name: `${base}.zip` },
+      ...(text && { text }),
       ...(audio && { audio }),
     },
   };
+}
+
+// Returns each slide's text, in reading order: lines of a paragraph are joined
+// (they are wrapped by the layout, not by the author), paragraphs are separated
+// by a blank line.
+async function readSlidesText(files) {
+  const byFile = new Map();
+  await exec(BIN.ocr, files, (line) => {
+    if (!line.startsWith('{')) return;
+    const r = JSON.parse(line);
+    byFile.set(r.file, r.lines);
+  });
+  return files.map((f) => toParagraphs((byFile.get(f) || []).filter((l, _, all) => !isStrayText(l, all))));
+}
+
+const overlapsX = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w;
+
+// Short text standing alone, away from the caption, is part of the photo
+// (a sign, a jersey number…), not of what the author wrote.
+function isStrayText(line, all) {
+  if (/\p{L}.*\p{L}/u.test(line.text)) return false;
+  return !all.some((o) => o !== line && overlapsX(o, line) && Math.abs(o.y - line.y) < 3 * Math.max(o.h, line.h));
+}
+
+function toParagraphs(lines) {
+  const paragraphs = [];
+  let prev = null;
+  for (const line of lines) {
+    const text = line.text.trim();
+    if (!text) continue;
+    const gap = prev && line.y - (prev.y + prev.h);
+    const sameParagraph = prev && overlapsX(prev, line) && gap > -prev.h && gap < 0.6 * Math.min(prev.h, line.h);
+    if (sameParagraph) {
+      const last = paragraphs.length - 1;
+      paragraphs[last] += /\p{L}-$/u.test(paragraphs[last]) ? text : ` ${text}`;
+    } else {
+      paragraphs.push(text);
+    }
+    prev = line;
+  }
+  return paragraphs.join('\n\n');
 }
 
 async function runAccount(job, account, dir) {
