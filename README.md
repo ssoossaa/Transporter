@@ -5,8 +5,13 @@ Colle un lien TikTok et récupère :
 - **Vidéo** : le MP4 (sans filigrane) et sa transcription (texte, horodatée, `.txt`, `.srt`)
 - **Carrousel photo** : toutes les slides en `.zip` (et le son en `.mp3`), et le texte écrit sur chaque slide,
   mot pour mot (à copier, ou en `.txt`, aussi inclus dans le zip)
-- **Compte** (`tiktok.com/@compte`) : l'URL de chaque post (à copier, ou en `.txt` / `.csv` avec date, description,
-  vues, likes), et un bouton pour récupérer n'importe quel post de la liste
+- **Compte** (`tiktok.com/@compte`) : l'URL de chaque post (à copier, ou en `.txt` / `.csv` avec type, date,
+  description, vues, likes), et un bouton pour récupérer n'importe quel post de la liste
+- **Texte de tous les carrousels d'un compte** : depuis la liste d'un compte, « Extraire le texte » lit chaque slide
+  de chaque carrousel (les vidéos sont ignorées), puis exporte :
+  - `.csv` : une ligne par carrousel (url, date, description, vues, likes, texte complet, puis une colonne par slide)
+  - `.json` : la même chose structurée, pour un script ou un outil
+  - `.md` : lisible, pratique à coller dans un assistant IA
 
 Tout tourne en local : aucune API payante, aucune donnée envoyée ailleurs qu'à TikTok.
 
@@ -54,6 +59,7 @@ lien TikTok
        ├─ vidéo     → yt-dlp (MP4 H.264) → ffmpeg (WAV 16 kHz) → whisper.cpp (+ VAD) → texte / SRT
        └─ carrousel → téléchargement des slides → OCR macOS (texte de chaque slide) → zip
 lien de compte → yt-dlp --flat-playlist (liste sans rien télécharger) → URLs, .txt, .csv
+  └─ texte des carrousels → pour chaque carrousel (3 à la fois) : page TikTok → slides → OCR → .csv / .json / .md
 ```
 
 | Brique | Rôle | Pourquoi |
@@ -70,7 +76,12 @@ yt-dlp ne gère pas les carrousels photo : on lit donc directement les données 
 TikTok ne stocke pas le texte des carrousels à part : il est incrusté dans les images, d'où l'OCR
 (`scripts/ocr/ocr.swift`, compilé dans `bin/` par `npm install` et `npm run install-app`). La correction
 automatique est désactivée pour garder le texte exact, fautes de l'auteur comprises. Le texte isolé dans la photo
-(un numéro sur une pancarte…) est écarté. L'OCR peut se tromper quand un élément de la photo traverse le texte.
+(un numéro sur une pancarte…) est écarté, comme tout ce que Vision lit avec une confiance faible. Limites : un élément
+de la photo qui traverse le texte peut ajouter un caractère, et une photo pleine d'écriture (notes manuscrites,
+tableau d'équations) laisse passer quelques fragments.
+
+yt-dlp liste tous les posts d'un compte sous une URL `/video/` ; la miniature des carrousels (« photomode »)
+permet de les reconnaître sans ouvrir chaque post, et de donner leur vraie URL `/photo/`.
 
 ## Réglages (variables d'environnement)
 

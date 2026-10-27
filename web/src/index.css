@@ -240,6 +240,7 @@ h1 {
 
 .badge {
   padding: 4px 10px;
+  white-space: nowrap;
   border-radius: 999px;
   background: var(--surface-2);
   font-size: 13px;
@@ -524,6 +525,66 @@ h1 {
   }
 }
 
+.callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(90deg, rgb(37 244 238 / 0.06), rgb(254 44 85 / 0.06));
+}
+
+.callout p {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.post--text {
+  display: block;
+}
+
+.post-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.post-thumb {
+  flex: none;
+  width: 44px;
+  height: 58px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--surface-2);
+}
+
+.post details {
+  margin-top: 8px;
+}
+
+.post summary,
+details.note summary {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.post details .segments {
+  margin-top: 12px;
+  padding-left: 60px;
+}
+
+details.note ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
 .ghost.small {
   height: 34px;
   padding: 0 14px;
@@ -631,6 +692,13 @@ h1 {
   }
   .panel {
     padding: 16px;
+  }
+  .callout {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .post details .segments {
+    padding-left: 0;
   }
 }
 

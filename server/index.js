@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { DATA_DIR, createJob, getJob, hasRunningJobs, loadJobs } from './pipeline.js';
+import { DATA_DIR, cancelJob, createCarouselTextJob, createJob, getJob, hasRunningJobs, loadJobs } from './pipeline.js';
 import { isTikTokUrl } from './tiktok.js';
 
 // Not PORT: dev tooling often sets PORT for the frontend, which would collide with Vite.
@@ -28,6 +28,20 @@ app.post('/api/jobs', (req, res) => {
   const url = String(req.body?.url || '').trim();
   if (!isTikTokUrl(url)) return res.status(400).json({ error: 'Colle un lien TikTok valide : une publication ou un compte (tiktok.com/@…).' });
   res.status(201).json(createJob(url));
+});
+
+// Batch: reads the text of every carousel listed by an account job.
+app.post('/api/jobs/:id/carousel-text', (req, res) => {
+  const source = getJob(req.params.id);
+  if (source?.type !== 'account' || source.status !== 'done') return res.status(400).json({ error: 'Liste des posts introuvable : relance le lien du compte.' });
+  res.status(201).json(createCarouselTextJob(source));
+});
+
+app.post('/api/jobs/:id/cancel', (req, res) => {
+  const job = getJob(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Tâche introuvable.' });
+  cancelJob(job);
+  res.json(job);
 });
 
 app.get('/api/jobs/:id', (req, res) => {
