@@ -18,6 +18,18 @@ const HALLUCINATIONS = [
   /sous-titr(es|age).*(amara|communauté|radio-canada)/i,
   /^(oh|ah|hmm|gracias)[.!]*$/i,
 ];
+// The network cut the connection to TikTok (firewall, filtering Wi-Fi, VPN…): say so,
+// rather than a raw "fetch failed" or a misleading "account not found".
+const NETWORK_ERROR = /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|UND_ERR_CONNECT|Connection reset|Failed to perform|Could not resolve|timed out/i;
+const NETWORK_MESSAGE = "TikTok est injoignable depuis ta connexion : le réseau coupe la connexion (Wi-Fi qui filtre les réseaux sociaux, VPN, pare-feu…). Réessaie sur un autre réseau, ou en activant/désactivant ton VPN.";
+
+function isNetworkError(err) {
+  for (let e = err; e; e = e.cause) {
+    if (NETWORK_ERROR.test(`${e.code || ''} ${e.message || ''} ${e.output || ''}`)) return true;
+  }
+  return false;
+}
+
 const BIN = {
   ytdlp: process.env.YTDLP_BIN || 'yt-dlp',
   ffmpeg: process.env.FFMPEG_BIN || 'ffmpeg',
@@ -75,7 +87,7 @@ export function createJob(url) {
     const current = job.steps.find((s) => s.status === 'running');
     if (current) current.status = 'error';
     job.status = 'error';
-    job.error = err.message || String(err);
+    job.error = isNetworkError(err) ? NETWORK_MESSAGE : err.message || String(err);
     console.error(`[job ${job.id}]`, err);
     saveMeta(job);
   });
@@ -404,7 +416,7 @@ function exec(cmd, args, onLine) {
     child.on('close', (code) => {
       if (code === 0) return resolve();
       const lastError = tail.split('\n').filter((l) => /error/i.test(l)).pop() || tail.trim().split('\n').pop();
-      reject(new Error(`${path.basename(cmd)} a échoué : ${lastError}`));
+      reject(Object.assign(new Error(`${path.basename(cmd)} a échoué : ${lastError}`), { output: tail }));
     });
   });
 }
