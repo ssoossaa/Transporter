@@ -20,10 +20,16 @@ export function isTikTokUrl(raw) {
 }
 
 // Short links (vm.tiktok.com, tiktok.com/t/...) redirect to the canonical URL.
-async function resolveUrl(raw) {
+export async function resolveUrl(raw) {
   const res = await fetch(raw, { headers: HEADERS, redirect: 'follow' });
   await res.body?.cancel();
   return res.url || raw;
+}
+
+// An account page: https://www.tiktok.com/@user (no /video/ or /photo/ after it).
+export function parseAccountUrl(url) {
+  const m = new URL(url).pathname.match(/^\/@([^/]+)\/?$/);
+  return m ? { author: decodeURIComponent(m[1]), url: `https://www.tiktok.com/@${m[1]}` } : null;
 }
 
 function parsePostUrl(url) {
@@ -36,10 +42,9 @@ function pickImageUrl(urlList = []) {
   return urlList.find((u) => /\.jpe?g/i.test(u)) || urlList[0];
 }
 
-export async function getPostInfo(rawUrl) {
-  const url = await resolveUrl(rawUrl);
+export async function getPostInfo(url) {
   const parsed = parsePostUrl(url);
-  if (!parsed) throw new Error("Ce lien ne ressemble pas à une publication TikTok (vidéo ou photo).");
+  if (!parsed) throw new Error('Ce lien ne ressemble pas à une publication ou un compte TikTok.');
 
   // Photo pages don't embed the post data, but the same id under /video/ does.
   const pageUrl = `https://www.tiktok.com/@${parsed.author}/video/${parsed.id}`;

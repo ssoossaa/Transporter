@@ -4,6 +4,8 @@ Colle un lien TikTok et récupère :
 
 - **Vidéo** : le MP4 (sans filigrane) et sa transcription (texte, horodatée, `.txt`, `.srt`)
 - **Carrousel photo** : toutes les slides en `.zip` (et le son en `.mp3`)
+- **Compte** (`tiktok.com/@compte`) : l'URL de chaque post (à copier, ou en `.txt` / `.csv` avec date, description,
+  vues, likes), et un bouton pour récupérer n'importe quel post de la liste
 
 Tout tourne en local : aucune API payante, aucune donnée envoyée ailleurs qu'à TikTok.
 
@@ -50,6 +52,7 @@ lien TikTok
   └─ server/tiktok.js    lit la page TikTok → vidéo ou carrousel ? (+ URLs des slides)
        ├─ vidéo     → yt-dlp (MP4 H.264) → ffmpeg (WAV 16 kHz) → whisper.cpp (+ VAD) → texte / SRT
        └─ carrousel → téléchargement des slides → zip
+lien de compte → yt-dlp --flat-playlist (liste sans rien télécharger) → URLs, .txt, .csv
 ```
 
 | Brique | Rôle | Pourquoi |
