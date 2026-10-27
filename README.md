@@ -1,14 +1,15 @@
 # Transporter
 
-Colle un lien TikTok et récupère :
+Colle un lien TikTok : Transporter reconnaît s'il s'agit d'une vidéo, d'un carrousel ou d'un compte, et te propose
+ce que tu peux en récupérer.
 
-- **Vidéo** : le MP4 (sans filigrane) et sa transcription (texte, horodatée, `.txt`, `.srt`)
+- **Vidéo** : le MP4 (sans filigrane) et sa transcription (texte, horodatée, `.txt`, `.srt`), ou le MP4 seul
 - **Carrousel photo** : toutes les slides en `.zip` (et le son en `.mp3`), et le texte écrit sur chaque slide,
   mot pour mot (à copier, ou en `.txt`, aussi inclus dans le zip)
 - **Compte** (`tiktok.com/@compte`) : l'URL de chaque post (à copier, ou en `.txt` / `.csv` avec type, date,
   description, vues, likes), et un bouton pour récupérer n'importe quel post de la liste
-- **Texte de tous les carrousels d'un compte** : depuis la liste d'un compte, « Extraire le texte » lit chaque slide
-  de chaque carrousel (les vidéos sont ignorées), puis exporte :
+- **Texte de tous les carrousels d'un compte** : directement depuis le lien du compte, ou depuis sa liste de posts,
+  lit chaque slide de chaque carrousel (les vidéos sont ignorées), puis exporte :
   - `.csv` : une ligne par carrousel (url, date, description, vues, likes, texte complet, puis une colonne par slide)
   - `.json` : la même chose structurée, pour un script ou un outil
   - `.md` : lisible, pratique à coller dans un assistant IA
@@ -70,6 +71,7 @@ lien de compte → yt-dlp --flat-playlist (liste sans rien télécharger) → UR
 | Silero VAD | Détection de voix | Évite que Whisper invente du texte sur la musique |
 | Apple Vision | Texte des slides (OCR) | Le moteur de « Texte en direct » de macOS : déjà installé, local, excellent en français |
 | Express + React (Vite) | Serveur + interface | — |
+| [shadcn/ui](https://ui.shadcn.com) + Tailwind CSS | Composants de l'interface | Composants accessibles (Radix), copiés dans `web/src/components/ui` |
 
 yt-dlp ne gère pas les carrousels photo : on lit donc directement les données embarquées dans la page TikTok.
 

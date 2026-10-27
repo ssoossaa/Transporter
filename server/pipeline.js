@@ -51,6 +51,10 @@ const STEPS = {
     { key: 'ocr', label: 'Lecture du texte des slides' },
     { key: 'zip', label: "Création de l'archive" },
   ],
+  'video-only': [
+    { key: 'fetch', label: 'Analyse du lien' },
+    { key: 'download', label: 'Téléchargement de la vidéo' },
+  ],
   account: [
     { key: 'fetch', label: 'Analyse du lien' },
     { key: 'list', label: 'Récupération des posts' },
@@ -76,8 +80,37 @@ export function hasRunningJobs() {
   return [...jobs.values()].some((j) => j.status === 'running');
 }
 
-export function createJob(url) {
-  return launch(newJob(url, null, STEPS.video.slice(0, 1)), run);
+// What the user picked in the menu for this kind of link. A choice that doesn't
+// fit the link (e.g. 'carousel-text' on a video) falls back to the default.
+export const ACTIONS = {
+  account: ['posts', 'carousel-text'],
+  video: ['video', 'video-only'],
+  carousel: ['carousel'],
+};
+
+export function createJob(url, action = null) {
+  const job = newJob(url, null, STEPS.video.slice(0, 1));
+  job.action = action;
+  return launch(job, run);
+}
+
+// Tells the menu what a link points to, before anything is downloaded.
+export async function inspectUrl(raw) {
+  try {
+    return await inspect(raw);
+  } catch (err) {
+    throw new Error(isNetworkError(err) ? NETWORK_MESSAGE : err.message, { cause: err });
+  }
+}
+
+async function inspect(raw) {
+  const url = await resolveUrl(raw);
+  const account = parseAccountUrl(url);
+  if (account) return { kind: 'account', author: account.author, url: account.url, actions: ACTIONS.account };
+  const info = await getPostInfo(url);
+  // Without the page data, trust the URL: TikTok shares carousels as /photo/.
+  const kind = info.found ? info.type : /\/photo\//.test(url) ? 'carousel' : 'video';
+  return { kind, author: info.author, url: info.url, description: info.description, slides: info.images.length || null, actions: ACTIONS[kind] };
 }
 
 // Reads the text of every carousel of an account already listed by `accountJob`.
@@ -151,11 +184,14 @@ async function run(job) {
   const url = await resolveUrl(job.url);
   const account = parseAccountUrl(url);
   if (account) {
-    job.type = 'account';
-    job.info = { author: account.author, url: account.url, posts: null };
-    job.steps = STEPS.account.map((s) => ({ ...s, status: 'pending', progress: null }));
+    // "Texte de tous les carrousels" straight from the account link: list, then read.
+    const textMode = job.action === 'carousel-text';
+    job.type = textMode ? 'carousel-text' : 'account';
+    job.info = { author: account.author, url: account.url, posts: null, ...(textMode && { carousels: null }) };
+    job.steps = [...STEPS.account, ...(textMode ? STEPS['carousel-text'] : [])].map((s) => ({ ...s, status: 'pending', progress: null }));
     step(job, 'fetch').done();
-    job.result = await runAccount(job, account, dir);
+    const listing = await runAccount(job, account, dir);
+    job.result = textMode ? await runCarouselText(job, listing.posts) : listing;
     job.status = 'done';
     await saveMeta(job);
     return;
@@ -164,7 +200,8 @@ async function run(job) {
   const info = await getPostInfo(url);
   job.type = info.type;
   job.info = { id: info.id, url: info.url, author: info.author, description: info.description, cover: info.cover, duration: info.duration, slides: info.images.length };
-  job.steps = STEPS[info.type].map((s) => ({ ...s, status: 'pending', progress: null }));
+  const videoOnly = info.type === 'video' && job.action === 'video-only';
+  job.steps = STEPS[videoOnly ? 'video-only' : info.type].map((s) => ({ ...s, status: 'pending', progress: null }));
   step(job, 'fetch').done();
 
   job.result = info.type === 'carousel' ? await runCarousel(job, info, dir) : await runVideo(job, info, dir);
@@ -190,6 +227,9 @@ async function runVideo(job, info, dir) {
     if (m) dl.progress(parseFloat(m[1]));
   });
   dl.done();
+
+  const video = { path: 'video.mp4', name: `${base}.mp4` };
+  if (job.action === 'video-only') return { language: null, text: null, segments: [], files: { video } };
 
   const audio = step(job, 'audio');
   audio.start();
@@ -235,7 +275,7 @@ async function runVideo(job, info, dir) {
     text,
     segments,
     files: {
-      video: { path: 'video.mp4', name: `${base}.mp4` },
+      video,
       txt: { path: 'transcript.txt', name: `${base}.txt` },
       srt: { path: 'transcript.srt', name: `${base}.srt` },
     },
@@ -315,6 +355,7 @@ async function runCarouselText(job, posts) {
   const dir = path.join(DATA_DIR, job.id);
   await fs.mkdir(dir, { recursive: true });
   const read = step(job, 'read');
+  read.start();
   const carousels = Array.from({ length: posts.length }, () => null);
   const failed = [];
   let videos = 0;
