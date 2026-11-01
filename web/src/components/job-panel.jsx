@@ -14,6 +14,10 @@ function badgeLabel(job) {
   if (job.type === 'account') return info.posts ? `Compte · ${plural(info.posts, 'post')}` : 'Compte'
   if (job.type === 'carousel-text')
     return info.carousels != null ? `Texte des carrousels · ${info.carousels}` : 'Texte des carrousels'
+  if (job.type === 'text-batch') {
+    const label = { carousels: 'Texte des carrousels', all: 'Texte des posts', urls: 'Lot de liens' }[info.mode]
+    return `${label} · ${info.items ?? info.posts ?? '…'}`
+  }
   return 'Vidéo'
 }
 
@@ -27,9 +31,13 @@ export function JobPanel({ job, onReset, onCancel, onRetry, children }) {
           {info ? (
             <>
               <Badge variant="secondary">{badgeLabel(job)}</Badge>
-              <a href={info.url} target="_blank" rel="noreferrer" className="font-semibold hover:underline">
-                @{info.author}
-              </a>
+              {info.author ? (
+                <a href={info.url} target="_blank" rel="noreferrer" className="font-semibold hover:underline">
+                  @{info.author}
+                </a>
+              ) : (
+                <span className="font-semibold">{plural(info.posts, 'lien')}</span>
+              )}
               {info.description && (
                 <p className="basis-full text-sm leading-relaxed break-words text-muted-foreground">{info.description}</p>
               )}
@@ -39,7 +47,7 @@ export function JobPanel({ job, onReset, onCancel, onRetry, children }) {
           )}
         </div>
         <div className="flex shrink-0 gap-2">
-          {running && job.type === 'carousel-text' && (
+          {running && (job.type === 'text-batch' || job.type === 'carousel-text') && (
             <Button variant="outline" onClick={onCancel} disabled={job.cancelRequested}>
               <Square />
               {job.cancelRequested ? 'Arrêt…' : 'Arrêter'}

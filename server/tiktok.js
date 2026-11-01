@@ -14,6 +14,8 @@ export const timeout = () => AbortSignal.timeout(20_000);
 const TIKTOK_HOST = /(^|\.)tiktok\.com$/i;
 
 export function isTikTokUrl(raw) {
+  // The URL parser drops line breaks, which would glue several pasted links into one.
+  if (/\s/.test(String(raw).trim())) return false;
   try {
     const u = new URL(raw);
     return /^https?:$/.test(u.protocol) && TIKTOK_HOST.test(u.hostname);
@@ -41,8 +43,14 @@ function parsePostUrl(url) {
   return { author: m[1], kind: m[2], id: m[3] };
 }
 
-function pickImageUrl(urlList = []) {
-  return urlList.find((u) => /\.jpe?g/i.test(u)) || urlList[0];
+// A full post URL, as opposed to a short link that still needs resolveUrl().
+export function isPostUrl(url) {
+  return Boolean(parsePostUrl(url));
+}
+
+// TikTok lists each image on several CDN hosts: JPEG ones first, the others as fallbacks.
+function imageSources(urlList = []) {
+  return [...urlList.filter((u) => /\.jpe?g/i.test(u)), ...urlList.filter((u) => !/\.jpe?g/i.test(u))];
 }
 
 export async function getPostInfo(url) {
@@ -61,7 +69,8 @@ export async function getPostInfo(url) {
     // Fall through: we can still try yt-dlp for videos.
   }
 
-  const images = item?.imagePost?.images?.map((img) => pickImageUrl(img.imageURL?.urlList)).filter(Boolean) ?? [];
+  const imageSourceLists = item?.imagePost?.images?.map((img) => imageSources(img.imageURL?.urlList)).filter((l) => l.length) ?? [];
+  const images = imageSourceLists.map((l) => l[0]);
   const type = images.length ? 'carousel' : 'video';
 
   return {
@@ -76,6 +85,11 @@ export async function getPostInfo(url) {
     cover: item?.video?.cover || item?.imagePost?.cover?.imageURL?.urlList?.[0] || null,
     duration: item?.video?.duration || null,
     images,
+    // Every source of each image, for downloads that fail on the first one.
+    imageSources: imageSourceLists,
     musicUrl: item?.music?.playUrl || null,
+    date: item?.createTime ? new Date(Number(item.createTime) * 1000).toISOString() : null,
+    views: item?.stats?.playCount ?? null,
+    likes: item?.stats?.diggCount ?? null,
   };
 }

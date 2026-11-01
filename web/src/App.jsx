@@ -3,7 +3,7 @@ import { JobPanel } from '@/components/job-panel'
 import { LinkForm } from '@/components/link-form'
 import { AccountResult } from '@/components/results/account-result'
 import { CarouselResult } from '@/components/results/carousel-result'
-import { CarouselTextResult } from '@/components/results/carousel-text-result'
+import { TextBatchResult } from '@/components/results/text-batch-result'
 import { VideoResult } from '@/components/results/video-result'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -14,6 +14,9 @@ const HEARTBEAT_MS = 30_000
 function readJobFromHash() {
   return new URLSearchParams(location.hash.slice(1)).get('job')
 }
+
+// What the field shows for a job: its link, or the list of links of a batch.
+const jobInput = (j) => j.url ?? (j.input || []).join('\n')
 
 export default function App() {
   const [url, setUrl] = useState('')
@@ -52,7 +55,7 @@ export default function App() {
         .then((j) => {
           if (!j) return
           setJob(j)
-          setUrl(j.url)
+          setUrl(jobInput(j))
         })
         .catch(() => {})
     }
@@ -93,7 +96,7 @@ export default function App() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Erreur inattendue.')
       setJob(data)
-      setUrl(data.url)
+      setUrl(jobInput(data))
       history[fromList ? 'pushState' : 'replaceState'](null, '', `#job=${data.id}`)
       if (fromList) window.scrollTo({ top: 0, behavior: 'smooth' })
     } catch (err) {
@@ -114,9 +117,33 @@ export default function App() {
       options,
     )
 
-  // Reads the carousels of an account already listed, without listing it again.
-  const extractCarouselText = (accountJob) =>
-    launch(() => fetch(`/api/jobs/${accountJob.id}/carousel-text`, { method: 'POST' }), { fromList: true })
+  const startBatch = (urls, options) =>
+    launch(
+      () =>
+        fetch('/api/batches', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urls }),
+        }),
+      options,
+    )
+
+  // Reads the posts of an account already listed, without listing it again.
+  const extractText = (accountJob, mode) =>
+    launch(
+      () =>
+        fetch(`/api/jobs/${accountJob.id}/text-batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        }),
+      { fromList: true },
+    )
+
+  // Same job again, from scratch (after an error or a stop).
+  // Batches from before actions were stored are carousels-only ones.
+  const retry = () =>
+    job.input ? startBatch(job.input) : start(job.url, job.action ?? (job.type === 'carousel-text' ? 'carousel-text' : null))
 
   async function cancel() {
     const res = await fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' })
@@ -146,24 +173,31 @@ export default function App() {
         </h1>
         {!job && (
           <p className="mx-auto mt-5 mb-9 max-w-lg text-[17px] leading-relaxed text-muted-foreground">
-            Une vidéo, un carrousel ou un compte TikTok : choisis ce que tu veux récupérer. Tout tourne en local sur ta
-            machine.
+            Une vidéo, un carrousel, un compte TikTok ou toute une liste de liens : choisis ce que tu veux récupérer.
+            Tout tourne en local sur ta machine.
           </p>
         )}
         <div className={cn(job && 'mt-8')}>
-          <LinkForm url={url} onUrlChange={setUrl} onStart={start} busy={running || submitting} error={error} />
+          <LinkForm
+            url={url}
+            onUrlChange={setUrl}
+            onStart={start}
+            onStartBatch={startBatch}
+            busy={running || submitting}
+            error={error}
+          />
         </div>
       </section>
 
       {job && (
-        <JobPanel job={job} onReset={reset} onCancel={cancel} onRetry={() => start(job.url, job.action)}>
+        <JobPanel job={job} onReset={reset} onCancel={cancel} onRetry={retry}>
           {job.type === 'video' && <VideoResult job={job} onStart={start} />}
           {job.type === 'carousel' && <CarouselResult job={job} />}
           {job.type === 'account' && (
-            <AccountResult job={job} onOpen={openPost} onExtractText={() => extractCarouselText(job)} />
+            <AccountResult job={job} onOpen={openPost} onExtractText={(mode) => extractText(job, mode)} />
           )}
-          {job.type === 'carousel-text' && (
-            <CarouselTextResult job={job} onOpen={openPost} onStart={(u, a) => start(u, a, { fromList: true })} />
+          {(job.type === 'text-batch' || job.type === 'carousel-text') && (
+            <TextBatchResult job={job} onOpen={openPost} onRetry={retry} />
           )}
         </JobPanel>
       )}
