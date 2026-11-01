@@ -2,7 +2,18 @@ import express from 'express';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { DATA_DIR, cancelJob, createCarouselTextJob, createJob, getJob, hasRunningJobs, inspectUrl, loadJobs } from './pipeline.js';
+import {
+  DATA_DIR,
+  cancelJob,
+  cleanUrlList,
+  createAccountBatchJob,
+  createJob,
+  createUrlBatchJob,
+  getJob,
+  hasRunningJobs,
+  inspectUrl,
+  loadJobs,
+} from './pipeline.js';
 import { isTikTokUrl } from './tiktok.js';
 
 // Not PORT: dev tooling often sets PORT for the frontend, which would collide with Vite.
@@ -44,11 +55,18 @@ app.post('/api/jobs', (req, res) => {
   res.status(201).json(createJob(url, action));
 });
 
-// Batch: reads the text of every carousel listed by an account job.
-app.post('/api/jobs/:id/carousel-text', (req, res) => {
+// Batch from a list of links: transcription for videos, OCR for carousels.
+app.post('/api/batches', (req, res) => {
+  const urls = cleanUrlList([].concat(req.body?.urls || []).filter(isTikTokUrl));
+  if (!urls.length) return res.status(400).json({ error: 'Aucun lien TikTok valide dans la liste.' });
+  res.status(201).json(createUrlBatchJob(urls));
+});
+
+// Batch from an account already listed: its carousels (mode "carousels") or all its posts ("all").
+app.post('/api/jobs/:id/text-batch', (req, res) => {
   const source = getJob(req.params.id);
   if (source?.type !== 'account' || source.status !== 'done') return res.status(400).json({ error: 'Liste des posts introuvable : relance le lien du compte.' });
-  res.status(201).json(createCarouselTextJob(source));
+  res.status(201).json(createAccountBatchJob(source, req.body?.mode === 'all' ? 'all' : 'carousels'));
 });
 
 app.post('/api/jobs/:id/cancel', (req, res) => {
@@ -71,7 +89,7 @@ app.get('/files/:id/*file', (req, res) => {
   const filePath = path.join(DATA_DIR, req.params.id, rel);
   if (!job || !filePath.startsWith(path.join(DATA_DIR, req.params.id) + path.sep)) return res.sendStatus(404);
   if (req.query.download) {
-    const entry = [...Object.values(job.result?.files || {}), ...(job.result?.slides || [])].find((f) => f.path === rel);
+    const entry = [...Object.values(job.result?.files || {}), ...(job.result?.slides || [])].find((f) => f?.path === rel);
     return res.download(filePath, entry?.name || path.basename(rel));
   }
   res.sendFile(filePath);

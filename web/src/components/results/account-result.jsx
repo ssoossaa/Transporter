@@ -1,4 +1,4 @@
-import { Copy, Download, ScanText, TriangleAlert } from 'lucide-react'
+import { Copy, Download, ScanText, TextQuote, TriangleAlert } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,7 @@ export function AccountResult({ job, onOpen, onExtractText }) {
   const { result } = job
   // Lists made before posts had a type: assume any of them may be a carousel.
   const carousels = result.posts.filter((p) => p.type !== 'video').length
+  const videos = result.posts.length - carousels
 
   return (
     <div className="grid gap-4">
@@ -22,12 +23,18 @@ export function AccountResult({ job, onOpen, onExtractText }) {
         <Button variant="outline" asChild>
           <a href={fileUrl(job, result.files.csv, true)}>.csv</a>
         </Button>
-        {carousels > 0 && (
-          <Button variant="outline" onClick={onExtractText} className="sm:ml-auto">
-            <ScanText />
-            Texte des {plural(carousels, 'carrousel')}
+        <div className="flex flex-wrap gap-2 sm:ml-auto">
+          {carousels > 0 && videos > 0 && (
+            <Button variant="outline" onClick={() => onExtractText('carousels')}>
+              <ScanText />
+              Texte des {plural(carousels, 'carrousel')}
+            </Button>
+          )}
+          <Button variant="outline" onClick={() => onExtractText('all')}>
+            <TextQuote />
+            {videos && carousels ? 'Texte de tous les posts' : videos ? `Transcrire les ${plural(videos, 'vidéo')}` : `Texte des ${plural(carousels, 'carrousel')}`}
           </Button>
-        )}
+        </div>
       </div>
       {result.partial && (
         <Alert>
@@ -55,11 +62,15 @@ export function PostList({ children }) {
   return <ol className="divide-y overflow-hidden rounded-xl border bg-background">{children}</ol>
 }
 
-export function PostRow({ thumb, title, href, meta, badge, onOpen, children }) {
+export function PostRow({ thumb, placeholder, title, href, meta, badge, onOpen, children }) {
   return (
     <li className="p-3 sm:px-4">
       <div className="flex items-center gap-3 sm:gap-4">
-        {thumb && <img src={thumb} alt="" loading="lazy" className="h-14 w-11 flex-none rounded-md bg-secondary object-cover" />}
+        {thumb ? (
+          <img src={thumb} alt="" loading="lazy" className="h-14 w-11 flex-none rounded-md bg-secondary object-cover" />
+        ) : (
+          placeholder && <div className="grid h-14 w-11 flex-none place-items-center rounded-md bg-secondary">{placeholder}</div>
+        )}
         <div className="grid min-w-0 flex-1 gap-1">
           <a href={href} target="_blank" rel="noreferrer" className="truncate text-sm font-medium hover:underline sm:text-[15px]">
             {title}

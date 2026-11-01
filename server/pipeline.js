@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { HEADERS, getPostInfo, parseAccountUrl, resolveUrl, timeout } from './tiktok.js';
+import { HEADERS, getPostInfo, isPostUrl, parseAccountUrl, resolveUrl, timeout } from './tiktok.js';
 
 export const DATA_DIR = path.resolve(process.env.DATA_DIR || 'data');
 const MODEL = path.resolve(process.env.WHISPER_MODEL || 'models/ggml-large-v3-turbo.bin');
@@ -59,11 +59,36 @@ const STEPS = {
     { key: 'fetch', label: 'Analyse du lien' },
     { key: 'list', label: 'Récupération des posts' },
   ],
-  'carousel-text': [
-    { key: 'read', label: 'Lecture du texte de chaque carrousel' },
-    { key: 'export', label: 'Création des exports' },
-  ],
 };
+
+// The three ways of reading many posts at once: what they read, how the step and
+// the exports are named.
+const BATCH_MODES = {
+  carousels: {
+    read: 'Lecture du texte de chaque carrousel',
+    base: (info) => `${info.author}-carrousels`,
+    title: (info) => `@${info.author} : texte des carrousels`,
+  },
+  all: {
+    read: 'Lecture du texte de chaque post',
+    base: (info) => `${info.author}-textes`,
+    title: (info) => `@${info.author} : texte de tous les posts`,
+  },
+  urls: {
+    read: 'Lecture du texte de chaque lien',
+    base: () => `transporter-lot-${new Date().toISOString().slice(0, 10)}`,
+    title: () => 'Texte des liens',
+  },
+};
+
+function batchSteps(mode) {
+  return [
+    { key: 'read', label: BATCH_MODES[mode].read },
+    { key: 'export', label: 'Création des exports' },
+  ];
+}
+
+const MAX_BATCH_URLS = 500;
 // Posts read in parallel by a batch: enough to go fast, few enough not to get throttled.
 const BATCH_CONCURRENCY = 3;
 
@@ -83,7 +108,7 @@ export function hasRunningJobs() {
 // What the user picked in the menu for this kind of link. A choice that doesn't
 // fit the link (e.g. 'carousel-text' on a video) falls back to the default.
 export const ACTIONS = {
-  account: ['posts', 'carousel-text'],
+  account: ['posts', 'carousel-text', 'all-text'],
   video: ['video', 'video-only'],
   carousel: ['carousel'],
 };
@@ -113,16 +138,37 @@ async function inspect(raw) {
   return { kind, author: info.author, url: info.url, description: info.description, slides: info.images.length || null, actions: ACTIONS[kind] };
 }
 
-// Reads the text of every carousel of an account already listed by `accountJob`.
-export function createCarouselTextJob(accountJob) {
+// Reads the text of the posts of an account already listed by `accountJob`:
+// its carousels only, or every post (videos are transcribed).
+export function createAccountBatchJob(accountJob, mode) {
   const { author, url } = accountJob.info;
-  const job = newJob(url, 'carousel-text', STEPS['carousel-text']);
-  job.info = { author, url, source: accountJob.id, posts: accountJob.result.posts.length, carousels: null };
+  const job = newJob(url, 'text-batch', batchSteps(mode));
+  job.action = mode === 'all' ? 'all-text' : 'carousel-text';
+  job.info = { mode, author, url, source: accountJob.id, posts: accountJob.result.posts.length, items: null };
   return launch(job, async (j) => {
-    j.result = await runCarouselText(j, accountJob.result.posts);
+    j.result = await runTextBatch(j, accountJob.result.posts);
     j.status = 'done';
     await saveMeta(j);
   });
+}
+
+// Reads the text of a list of links: transcription for videos, OCR for carousels.
+export function createUrlBatchJob(urls) {
+  const job = newJob(null, 'text-batch', batchSteps('urls'));
+  job.input = urls;
+  job.info = { mode: 'urls', author: null, url: null, posts: urls.length, items: null };
+  // /photo/ links are carousels; the others are found out when each page is read.
+  const posts = urls.map((url) => ({ url, type: /\/photo\//.test(url) ? 'carousel' : null }));
+  return launch(job, async (j) => {
+    j.result = await runTextBatch(j, posts);
+    j.status = 'done';
+    await saveMeta(j);
+  });
+}
+
+// Keeps the TikTok links of a pasted list or file, without duplicates.
+export function cleanUrlList(urls) {
+  return [...new Set(urls.map((u) => String(u).trim()).filter(Boolean))].slice(0, MAX_BATCH_URLS);
 }
 
 // Stops a batch after the posts in progress; what was read so far is still exported.
@@ -184,14 +230,14 @@ async function run(job) {
   const url = await resolveUrl(job.url);
   const account = parseAccountUrl(url);
   if (account) {
-    // "Texte de tous les carrousels" straight from the account link: list, then read.
-    const textMode = job.action === 'carousel-text';
-    job.type = textMode ? 'carousel-text' : 'account';
-    job.info = { author: account.author, url: account.url, posts: null, ...(textMode && { carousels: null }) };
-    job.steps = [...STEPS.account, ...(textMode ? STEPS['carousel-text'] : [])].map((s) => ({ ...s, status: 'pending', progress: null }));
+    // Text of the account's posts straight from its link: list, then read.
+    const mode = { 'carousel-text': 'carousels', 'all-text': 'all' }[job.action];
+    job.type = mode ? 'text-batch' : 'account';
+    job.info = { author: account.author, url: account.url, posts: null, ...(mode && { mode, items: null }) };
+    job.steps = [...STEPS.account, ...(mode ? batchSteps(mode) : [])].map((s) => ({ ...s, status: 'pending', progress: null }));
     step(job, 'fetch').done();
     const listing = await runAccount(job, account, dir);
-    job.result = textMode ? await runCarouselText(job, listing.posts) : listing;
+    job.result = mode ? await runTextBatch(job, listing.posts) : listing;
     job.status = 'done';
     await saveMeta(job);
     return;
@@ -215,33 +261,59 @@ async function runVideo(job, info, dir) {
 
   const dl = step(job, 'download');
   dl.start();
-  // Prefer H.264 so the preview plays in every browser (TikTok also serves H.265).
-  await exec(BIN.ytdlp, [
-    '-f', 'b[vcodec^=h264]/b[vcodec^=avc]/b',
-    '--no-playlist', '--no-part', '--newline',
-    '--progress-template', 'download:%(progress._percent_str)s',
-    '-o', videoPath,
-    info.url,
-  ], (line) => {
-    const m = line.match(/([\d.]+)%/);
-    if (m) dl.progress(parseFloat(m[1]));
-  });
+  await downloadVideo(info.url, videoPath, (p) => dl.progress(p));
   dl.done();
 
   const video = { path: 'video.mp4', name: `${base}.mp4` };
   if (job.action === 'video-only') return { language: null, text: null, segments: [], files: { video } };
 
   const audio = step(job, 'audio');
-  audio.start();
-  const wavPath = path.join(dir, 'audio.wav');
-  await exec(BIN.ffmpeg, ['-y', '-loglevel', 'error', '-i', videoPath, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', wavPath]);
-  audio.done();
-
   const tr = step(job, 'transcribe');
-  tr.start();
-  const outPrefix = path.join(dir, 'transcript');
+  audio.start();
+  const { language, text, segments } = await transcribeVideo(videoPath, path.join(dir, 'transcript'), {
+    onAudioReady: () => {
+      audio.done();
+      tr.start();
+    },
+    onProgress: (p) => tr.progress(p),
+  });
+  tr.done();
+
+  return {
+    language,
+    text,
+    segments,
+    files: {
+      video,
+      txt: { path: 'transcript.txt', name: `${base}.txt` },
+      srt: { path: 'transcript.srt', name: `${base}.srt` },
+    },
+  };
+}
+
+async function downloadVideo(url, dest, onProgress) {
+  // Prefer H.264 so the preview plays in every browser (TikTok also serves H.265).
+  await exec(BIN.ytdlp, [
+    '-f', 'b[vcodec^=h264]/b[vcodec^=avc]/b',
+    '--no-playlist', '--no-part', '--newline',
+    '--progress-template', 'download:%(progress._percent_str)s',
+    '-o', dest,
+    url,
+  ], (line) => {
+    const m = line.match(/([\d.]+)%/);
+    if (m) onProgress?.(parseFloat(m[1]));
+  });
+}
+
+// Video → 16 kHz WAV → Whisper. Writes <outPrefix>.txt and .srt from the filtered
+// segments, and returns them with the detected language.
+async function transcribeVideo(videoPath, outPrefix, { onAudioReady, onProgress } = {}) {
+  const wavPath = `${outPrefix}.wav`;
+  await exec(BIN.ffmpeg, ['-y', '-loglevel', 'error', '-i', videoPath, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', wavPath]);
+  onAudioReady?.();
+
   const vad = (await exists(VAD_MODEL)) ? ['--vad', '-vm', VAD_MODEL] : [];
-  const transcribe = () =>
+  const whisper = () =>
     exec(BIN.whisper, [
       '-m', MODEL,
       '-f', wavPath,
@@ -253,12 +325,15 @@ async function runVideo(job, info, dir) {
       '-of', outPrefix,
     ], (line) => {
       const m = line.match(/progress\s*=\s*(\d+)%/);
-      if (m) tr.progress(parseInt(m[1], 10));
+      if (m) onProgress?.(parseInt(m[1], 10));
     });
-  const queued = transcribeQueue.then(transcribe);
+  const queued = transcribeQueue.then(whisper);
   transcribeQueue = queued.catch(() => {});
-  await queued;
-  await fs.rm(wavPath, { force: true });
+  try {
+    await queued;
+  } finally {
+    await fs.rm(wavPath, { force: true });
+  }
 
   const json = JSON.parse(await fs.readFile(`${outPrefix}.json`, 'utf8'));
   const segments = (json.transcription || [])
@@ -268,18 +343,7 @@ async function runVideo(job, info, dir) {
   // Written here rather than by whisper-cli so the files match the filtered segments.
   await fs.writeFile(`${outPrefix}.txt`, text ? `${text}\n` : '');
   await fs.writeFile(`${outPrefix}.srt`, toSrt(segments));
-  tr.done();
-
-  return {
-    language: segments.length ? json.result?.language || null : null,
-    text,
-    segments,
-    files: {
-      video,
-      txt: { path: 'transcript.txt', name: `${base}.txt` },
-      srt: { path: 'transcript.srt', name: `${base}.srt` },
-    },
-  };
+  return { language: segments.length ? json.result?.language || null : null, text, segments };
 }
 
 async function runCarousel(job, info, dir) {
@@ -289,7 +353,7 @@ async function runCarousel(job, info, dir) {
 
   const dl = step(job, 'download');
   dl.start();
-  const slides = (await downloadSlides(info.images, slidesDir, (p) => dl.progress(p * 100))).map((name) => ({
+  const slides = (await downloadSlides(info.imageSources, slidesDir, (p) => dl.progress(p * 100))).map((name) => ({
     path: `slides/${name}`,
     name: `${base}-${name}`,
   }));
@@ -339,56 +403,88 @@ async function runCarousel(job, info, dir) {
 }
 
 // Downloads slide images as slide-01.jpg, slide-02.jpg… and returns their file names.
-async function downloadSlides(urls, slidesDir, onProgress) {
+// Each slide comes with several sources (CDN hosts): the next one is tried if one fails.
+async function downloadSlides(sourceLists, slidesDir, onProgress) {
   await fs.mkdir(slidesDir, { recursive: true });
   const names = [];
-  for (const [i, url] of urls.entries()) {
+  for (const [i, sources] of sourceLists.entries()) {
     const name = `slide-${String(i + 1).padStart(2, '0')}.jpg`;
-    await download(url, path.join(slidesDir, name));
+    await downloadFirst(sources, path.join(slidesDir, name));
     names.push(name);
-    onProgress?.((i + 1) / urls.length);
+    onProgress?.((i + 1) / sourceLists.length);
   }
   return names;
 }
 
-async function runCarouselText(job, posts) {
+async function runTextBatch(job, posts) {
+  const { mode } = job.info;
   const dir = path.join(DATA_DIR, job.id);
   await fs.mkdir(dir, { recursive: true });
   const read = step(job, 'read');
   read.start();
-  const carousels = Array.from({ length: posts.length }, () => null);
+  const items = Array.from({ length: posts.length }, () => null);
   const failed = [];
-  let videos = 0;
+  let skipped = 0;
   let done = 0;
   let next = 0;
 
+  // Returns the post's text, or null for a video in carousels-only mode.
   const readPost = async (post) => {
-    if (post.type === 'video') return null;
-    const info = await getPostInfo(post.url);
+    if (mode === 'carousels' && post.type === 'video') return null;
+    const url = isPostUrl(post.url) ? post.url : await resolveUrl(post.url);
+    if (parseAccountUrl(url)) throw new Error('Lien de compte : colle-le seul pour lire tous ses posts.');
+    const info = await getPostInfo(url);
     if (!info.found) throw new Error('TikTok n’a pas renvoyé ce post.');
-    if (info.type !== 'carousel') return null;
-    const rel = `carrousels/${info.id}`;
-    const names = await downloadSlides(info.images, path.join(dir, rel));
-    const texts = await readSlidesText(names.map((n) => path.join(dir, rel, n)));
-    return {
+    if (mode === 'carousels' && info.type !== 'carousel') return null;
+
+    const rel = `posts/${info.id}`;
+    await fs.mkdir(path.join(dir, rel), { recursive: true });
+    const item = {
       url: info.url,
       id: info.id,
-      date: post.date,
-      description: (info.description || post.description).trim(),
-      views: post.views,
-      likes: post.likes,
-      slides: names.map((n, i) => ({ n: i + 1, path: `${rel}/${n}`, text: texts[i] })),
+      type: info.type,
+      date: post.date ?? info.date,
+      description: (info.description || post.description || '').trim(),
+      views: post.views ?? info.views,
+      likes: post.likes ?? info.likes,
     };
+
+    if (info.type === 'carousel') {
+      const names = await downloadSlides(info.imageSources, path.join(dir, rel));
+      const texts = await readSlidesText(names.map((n) => path.join(dir, rel, n)));
+      const slides = names.map((n, i) => ({ n: i + 1, path: `${rel}/${n}`, text: texts[i] }));
+      return { ...item, text: texts.filter(Boolean).join('\n\n'), slides };
+    }
+
+    // Videos: only the transcript is kept (and the cover, for the list).
+    const videoPath = path.join(dir, rel, 'video.mp4');
+    await downloadVideo(info.url, videoPath);
+    let cover = null;
+    if (info.cover) {
+      try {
+        await download(info.cover, path.join(dir, rel, 'cover.jpg'));
+        cover = { path: `${rel}/cover.jpg` };
+      } catch {
+        // The list shows a placeholder instead.
+      }
+    }
+    try {
+      const { language, text, segments } = await transcribeVideo(videoPath, path.join(dir, rel, 'transcript'));
+      return { ...item, cover, language, text, segments };
+    } finally {
+      await fs.rm(videoPath, { force: true });
+    }
   };
 
-  // A few workers pull posts from a shared index; results keep the account's order.
+  // A few workers pull posts from a shared index; results keep the list's order.
+  // Downloads overlap, while transcriptions wait their turn in transcribeQueue.
   const worker = async () => {
     while (next < posts.length && !job.cancelRequested) {
       const i = next++;
       try {
-        const carousel = await readPost(posts[i]);
-        if (carousel) carousels[i] = carousel;
-        else videos++;
+        const item = await readPost(posts[i]);
+        if (item) items[i] = item;
+        else skipped++;
       } catch (err) {
         failed.push({ url: posts[i].url, error: err.message, network: isNetworkError(err) });
       }
@@ -399,58 +495,64 @@ async function runCarouselText(job, posts) {
   };
   await Promise.all(Array.from({ length: BATCH_CONCURRENCY }, worker));
 
-  const found = carousels.filter(Boolean);
+  const found = items.filter(Boolean);
   if (!found.length && failed.length && failed.every((f) => f.network)) throw new Error(NETWORK_MESSAGE);
-  job.info.carousels = found.length;
+  job.info.items = found.length;
   read.done();
 
   const exp = step(job, 'export');
   exp.start();
-  const files = await writeCarouselTextExports(dir, job.info, found);
+  const files = await writeTextExports(dir, job.info, found);
   exp.done();
 
-  return { carousels: found, videos, failed, read: done, total: posts.length, cancelled: Boolean(job.cancelRequested), files };
+  return { items: found, skipped, failed, read: done, total: posts.length, cancelled: Boolean(job.cancelRequested), files };
 }
 
 // Three formats of the same data: a spreadsheet, a structured file for scripts,
 // and a readable document (handy to paste into an AI assistant).
-async function writeCarouselTextExports(dir, info, carousels) {
-  const base = `${info.author}-carrousels`;
-  const fullText = (c) => c.slides.map((s) => s.text).filter(Boolean).join('\n\n');
+async function writeTextExports(dir, info, items) {
+  const mode = BATCH_MODES[info.mode];
+  const base = mode.base(info);
+  const typeLabel = (i) => (i.type === 'carousel' ? 'carrousel' : 'vidéo');
 
-  const maxSlides = Math.max(0, ...carousels.map((c) => c.slides.length));
-  const slideCols = Array.from({ length: maxSlides }, (_, i) => `slide_${i + 1}`);
-  await writeCsv(path.join(dir, 'carrousels.csv'), [
-    ['url', 'date', 'description', 'vues', 'likes', 'nb_slides', 'texte', ...slideCols],
-    ...carousels.map((c) => [
-      c.url, c.date, c.description, c.views, c.likes, c.slides.length, fullText(c),
-      ...slideCols.map((_, i) => c.slides[i]?.text ?? ''),
+  const maxSlides = Math.max(0, ...items.map((i) => i.slides?.length || 0));
+  const slideCols = Array.from({ length: maxSlides }, (_, n) => `slide_${n + 1}`);
+  await writeCsv(path.join(dir, 'textes.csv'), [
+    ['url', 'type', 'date', 'description', 'vues', 'likes', 'langue', 'nb_slides', 'texte', ...slideCols],
+    ...items.map((i) => [
+      i.url, typeLabel(i), i.date, i.description, i.views, i.likes, i.language, i.slides?.length, i.text,
+      ...slideCols.map((_, n) => i.slides?.[n]?.text ?? ''),
     ]),
   ]);
 
   const json = {
-    account: `@${info.author}`,
+    source: info.author ? `@${info.author}` : null,
     url: info.url,
     extractedAt: new Date().toISOString(),
-    carousels: carousels.map(({ slides, ...c }) => ({ ...c, slides: slides.map(({ n, text }) => ({ n, text })) })),
+    items: items.map(({ slides, cover: _cover, ...i }) => ({
+      ...i,
+      ...(slides && { slides: slides.map(({ n, text }) => ({ n, text })) }),
+    })),
   };
-  await fs.writeFile(path.join(dir, 'carrousels.json'), `${JSON.stringify(json, null, 2)}\n`);
+  await fs.writeFile(path.join(dir, 'textes.json'), `${JSON.stringify(json, null, 2)}\n`);
 
   const day = (d) => (d ? d.slice(0, 10) : 'date inconnue');
   const md = [
-    `# @${info.author} : texte des carrousels`,
-    ...carousels.map((c, i) => [
-      `## ${i + 1}. ${day(c.date)}${c.description ? ` · ${c.description}` : ''}`,
-      c.url,
-      ...c.slides.map((s) => `**Slide ${s.n}**\n${s.text || '_(pas de texte)_'}`),
+    `# ${mode.title(info)}`,
+    ...items.map((i, n) => [
+      `## ${n + 1}. ${day(i.date)}${i.description ? ` · ${i.description}` : ''}`,
+      i.url,
+      ...(i.type === 'carousel'
+        ? i.slides.map((s) => `**Slide ${s.n}**\n${s.text || '_(pas de texte)_'}`)
+        : [`**Transcription${i.language ? ` (${i.language})` : ''}**\n${i.text || '_(aucune parole détectée)_'}`]),
     ].join('\n\n')),
   ].join('\n\n');
-  await fs.writeFile(path.join(dir, 'carrousels.md'), `${md}\n`);
+  await fs.writeFile(path.join(dir, 'textes.md'), `${md}\n`);
 
   return {
-    csv: { path: 'carrousels.csv', name: `${base}.csv` },
-    json: { path: 'carrousels.json', name: `${base}.json` },
-    md: { path: 'carrousels.md', name: `${base}.md` },
+    csv: { path: 'textes.csv', name: `${base}.csv` },
+    json: { path: 'textes.json', name: `${base}.json` },
+    md: { path: 'textes.md', name: `${base}.md` },
   };
 }
 
@@ -579,10 +681,32 @@ function exists(p) {
   return fs.access(p).then(() => true, () => false);
 }
 
-async function download(url, dest) {
-  const res = await fetch(url, { headers: HEADERS, signal: timeout() });
-  if (!res.ok) throw new Error(`Téléchargement impossible (${res.status})`);
-  await fs.writeFile(dest, Buffer.from(await res.arrayBuffer()));
+// TikTok's CDN sometimes answers 404 or drops a request for a file that is there:
+// one retry after a short pause is usually enough.
+async function download(url, dest, attempts = 2) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await fetch(url, { headers: HEADERS, signal: timeout() });
+      if (!res.ok) throw new Error(`Téléchargement impossible (${res.status})`);
+      await fs.writeFile(dest, Buffer.from(await res.arrayBuffer()));
+      return;
+    } catch (err) {
+      if (attempt >= attempts) throw err;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+}
+
+async function downloadFirst(urls, dest) {
+  let lastError;
+  for (const url of urls) {
+    try {
+      return await download(url, dest);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
 }
 
 function exec(cmd, args, onLine) {

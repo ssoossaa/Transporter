@@ -8,11 +8,18 @@ ce que tu peux en récupérer.
   mot pour mot (à copier, ou en `.txt`, aussi inclus dans le zip)
 - **Compte** (`tiktok.com/@compte`) : l'URL de chaque post (à copier, ou en `.txt` / `.csv` avec type, date,
   description, vues, likes), et un bouton pour récupérer n'importe quel post de la liste
-- **Texte de tous les carrousels d'un compte** : directement depuis le lien du compte, ou depuis sa liste de posts,
-  lit chaque slide de chaque carrousel (les vidéos sont ignorées), puis exporte :
-  - `.csv` : une ligne par carrousel (url, date, description, vues, likes, texte complet, puis une colonne par slide)
-  - `.json` : la même chose structurée, pour un script ou un outil
+- **Texte de plusieurs posts d'un coup** : transcription des vidéos et texte des carrousels, pour
+  - une **liste de liens** : colle-les (un par ligne) ou importe un `.txt` / `.csv` (par exemple le `posts.csv` d'un compte) ;
+  - **tous les posts d'un compte**, ou seulement ses carrousels, depuis son lien ou depuis sa liste de posts.
+
+  Exports :
+  - `.csv` : une ligne par post (url, type, date, description, vues, likes, langue, texte complet, puis une colonne
+    par slide pour les carrousels)
+  - `.json` : la même chose structurée, avec les horodatages des transcriptions, pour un script ou un outil
   - `.md` : lisible, pratique à coller dans un assistant IA
+
+  Les vidéos sont transcrites une par une (Whisper occupe toute la puce graphique) : compte 5 à 15 s par vidéo d'une
+  minute. Les carrousels vont plus vite. Un lot peut être arrêté en cours de route : ce qui a été lu est exporté.
 
 Tout tourne en local : aucune API payante, aucune donnée envoyée ailleurs qu'à TikTok.
 
@@ -60,7 +67,8 @@ lien TikTok
        ├─ vidéo     → yt-dlp (MP4 H.264) → ffmpeg (WAV 16 kHz) → whisper.cpp (+ VAD) → texte / SRT
        └─ carrousel → téléchargement des slides → OCR macOS (texte de chaque slide) → zip
 lien de compte → yt-dlp --flat-playlist (liste sans rien télécharger) → URLs, .txt, .csv
-  └─ texte des carrousels → pour chaque carrousel (3 à la fois) : page TikTok → slides → OCR → .csv / .json / .md
+  └─ texte des posts → pour chaque post (3 à la fois) : page TikTok → vidéo : whisper.cpp / carrousel : OCR → .csv / .json / .md
+liste de liens → même traitement que le texte des posts d'un compte
 ```
 
 | Brique | Rôle | Pourquoi |
