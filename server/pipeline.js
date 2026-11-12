@@ -291,18 +291,47 @@ async function runVideo(job, info, dir) {
   };
 }
 
+// TikTok serves each format from two CDN copies (format ids ending in -0 and -1), and
+// its CDN sometimes refuses one of them (403) or the page itself (502) for a while.
+// yt-dlp doesn't fall back to another copy when a download fails, so we do: each
+// attempt asks for a different copy, H.264 first so the preview plays everywhere.
+const VIDEO_FORMATS = [
+  'b[vcodec^=h264]/b[vcodec^=avc]/b',
+  'b[vcodec^=h264][format_id$=-0]/b[vcodec^=avc][format_id$=-0]',
+  'b[vcodec^=h264][format_id$=-1]/b[vcodec^=avc][format_id$=-1]',
+  // Last resort: any format, H.265 included (fine for the transcript).
+  'b',
+];
+const RETRYABLE_DOWNLOAD = /HTTP Error (403|429|5\d\d)|timed out|Connection reset|Requested format is not available/i;
+
 async function downloadVideo(url, dest, onProgress) {
-  // Prefer H.264 so the preview plays in every browser (TikTok also serves H.265).
-  await exec(BIN.ytdlp, [
-    '-f', 'b[vcodec^=h264]/b[vcodec^=avc]/b',
-    '--no-playlist', '--no-part', '--newline',
-    '--progress-template', 'download:%(progress._percent_str)s',
-    '-o', dest,
-    url,
-  ], (line) => {
-    const m = line.match(/([\d.]+)%/);
-    if (m) onProgress?.(parseFloat(m[1]));
-  });
+  let lastError;
+  for (const [i, format] of VIDEO_FORMATS.entries()) {
+    try {
+      await fs.rm(dest, { force: true });
+      await exec(BIN.ytdlp, [
+        '-f', format,
+        '--no-playlist', '--no-part', '--newline',
+        '--progress-template', 'download:%(progress._percent_str)s',
+        '-o', dest,
+        url,
+      ], (line) => {
+        const m = line.match(/([\d.]+)%/);
+        if (m) onProgress?.(parseFloat(m[1]));
+      });
+      return;
+    } catch (err) {
+      lastError = err;
+      // A private or deleted video won't come back with another format.
+      if (!RETRYABLE_DOWNLOAD.test(`${err.message} ${err.output || ''}`)) throw err;
+      console.warn(`[download] essai ${i + 1}/${VIDEO_FORMATS.length} refusé par TikTok :`, err.message);
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  throw new Error(
+    'TikTok refuse de servir cette vidéo pour le moment (essayé sur plusieurs serveurs). Réessaie dans quelques minutes.',
+    { cause: lastError },
+  );
 }
 
 // Video → 16 kHz WAV → Whisper. Writes <outPrefix>.txt and .srt from the filtered
